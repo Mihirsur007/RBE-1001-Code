@@ -27,9 +27,11 @@ bumper1 = Bumper(brain.three_wire_port.g)
 
 # Reflectance
 ## TODO: Declare the reflectance sensor here
+reflectance_left = Line(brain.three_wire_port.b)
 
 # Rangefinder
 ## TODO: Declare the ultrasonic rangefinder here
+range_finder = Sonar(brain.three_wire_port.e)
 
 """
 Pro-tip: print out state _transistions_.
@@ -47,8 +49,8 @@ def handleLeft1Button():
         # return to the main loop.
 
         ## TODO: You'll need to update the speed and number of turns
-        left_motor.spin_for(FORWARD, 15.1901639792, TURNS, 91.15, RPM, wait = False)
-        right_motor.spin_for(FORWARD, 15.1901639792, TURNS, 91.15, RPM, wait = False)
+        left_motor.spin_for(FORWARD, 5, TURNS, 91.15, RPM, wait = False)
+        right_motor.spin_for(FORWARD, 5, TURNS, 91.15, RPM, wait = False)
 
     else: # in any other state, the button acts as a kill switch
         print(' -> IDLE')
@@ -90,8 +92,8 @@ def handleMotionComplete():
         current_state = DRIVING_BKWD
 
          ## TODO: You'll need to update the speed and number of turns       
-        left_motor.spin_for(REVERSE, 15.1901639792, TURNS, 91.15, RPM, wait = False)
-        right_motor.spin_for(REVERSE, 15.1901639792, TURNS, 91.15, RPM, wait = False)
+        left_motor.spin_for(REVERSE, 5, TURNS, 91.15, RPM, wait = False)
+        right_motor.spin_for(REVERSE, 5, TURNS, 91.15, RPM, wait = False)
     
     elif(current_state == DRIVING_BKWD):
         print('BACKWARD -> IDLE')
@@ -100,6 +102,13 @@ def handleMotionComplete():
     else:
         print('E-stop') # Should print when button is used as E-stop
 
+def checkDirection():
+    direction_1 = True
+    if (current_state == DRIVING_FWD):
+        direction_1 = True
+    elif (current_state == DRIVING_BKWD):
+        direction_1 = False
+    return direction_1
 
 ## TODO: Add a checker for the reflectance sensor
 ## See checkMotionComplete() for a good example
@@ -124,7 +133,11 @@ the VEX event system.
 """
 # The main loop
 while True:
+    #print(reflectance_left.reflectivity(PERCENT))
     if(checkMotionComplete()): handleMotionComplete()
+    #if(reflectance_left.reflectivity(PERCENT) > 15): 
+        #handleMotionComplete()       #print(checkDirection())
+    print(range_finder.distance(MM))
 
 ## TODO: Add various checkers/handlers; print ultrasonic; etc. See handout.
 
