@@ -31,7 +31,8 @@ ai_vision_2__green_fruit = Colordesc(3, 21, 123, 74, 10, 0.2)
 ai_vision_2__orange_fruit = Colordesc(2, 160, 57, 29, 10, 0.2)
 ai_vision_2 = AiVision(Ports.PORT2, ai_vision_2__purple_fruit, ai_vision_2__green_fruit, ai_vision_2__orange_fruit) # Fruit
 
-fruit_switch = Bumper(brain.three_wire_port.h)
+range_finder_left = Sonar(brain.three_wire_port.c) # CD left
+range_finder_right = Sonar(brain.three_wire_port.e) # EF right
 
 # Variables and constants =====================================
 #States
@@ -49,14 +50,31 @@ CENTER_X = 160 # Center of camera (320 width → 160 center)
 EDGE_MARGIN = 20 # Ignore outer 40px on each side to help filter messy tag data
 MAX_STRAFE = 40 # Maximum amount the robot can move (30–50 is good)
 
-gtb_mode = False # When atempting to find a bin, this determins a genral search or a spacific search
-gtb_gtb_locked_tag = -1 # Tag that the robot is currently looking for
-camera_mode = 0 # Swiches between looking for fruit and looking for apriltags
+gtb_s1 = False
+gtb_gtb_locked_tag = -1
+camera_mode = 0 
 
-zc_time = 0 # Used to zero the claw
-m_searching_direction = True # When no fruit found, determins direction the robot spins to search for fruit
+zc_time = 0
+m_searching_direction = True
 
-a_ramp_tilt_mode = 0 # When climbing ramp, determinds what part of the climb the robot does
+a_ramp_tilt_mode = 0
+
+
+# Helper functions ============================================
+def display_info(): # Displays info on the brain screen
+    # Clear the screen
+    brain.screen.set_fill_color(Color.BLACK)
+    brain.screen.draw_rectangle(10, 0, 470, 240)
+    # Draw colored state bar
+    di_color_map = {STANDBY: Color.GREEN, MOVE: Color.PURPLE, AUTO: Color.BLUE, CALIBRATION: Color.RED}
+    brain.screen.set_fill_color(di_color_map[state])
+    brain.screen.draw_rectangle(0, 0, 30, 240)
+    # Draw colored state text
+    di_mode_text_map = {STANDBY: "STANDBY", MOVE: "DRIVE", CALIBRATION: "CALIBRATION", AUTO: "AUTO"}
+    brain.screen.set_cursor(1, 1)
+    brain.screen.set_fill_color(di_color_map[state])
+    brain.screen.print(di_mode_text_map[state])
+    # print("[display_info]: ", "color: ", di_color_map[state], ", state: ", di_mode_text_map[state])
 
 def stop_all(): # Stops all motors
     left_drive_motor.stop()
@@ -100,15 +118,13 @@ def drive_x(x_input, y_input, r_x_input, r_y_input, rotation_input, heading_degr
 
 def zero_elevator(): # Zeros the elevator by retracting it all the way down. Then resets the position of the elevator motors
     print("[zero_elevator]: started zeroing elevator")
-    # Starts by moving the elevator up a little bit
     right_elevator_motor.spin_to_position(360, DEGREES, 50, PERCENT, False)
     left_elevator_motor.spin_to_position(360, DEGREES, 50, PERCENT, True)
-    # Then moves the elevator down until it reaches the bottom
     while(elevator_limit_switch.pressing() == False) and (left_elevator_motor.torque(TorqueUnits.NM) < 0.5) and (right_elevator_motor.torque(TorqueUnits.NM) < 0.5):
-        # print("[zero_elevator]: while loop - ", "elevator_limit_switch pressed? ", elevator_limit_switch.pressing(), ", left_elevator_motor torque: ", left_elevator_motor.torque(TorqueUnits.NM), ", right_elevator_motor torque: ", right_elevator_motor.torque(TorqueUnits.NM))
+        print("[zero_elevator]: while loop - ", "elevator_limit_switch pressed? ", elevator_limit_switch.pressing(), ", left_elevator_motor torque: ", left_elevator_motor.torque(TorqueUnits.NM), ", right_elevator_motor torque: ", right_elevator_motor.torque(TorqueUnits.NM))
         right_elevator_motor.spin(REVERSE, 50)
         left_elevator_motor.spin(REVERSE, 50)
-    else: # Then stops the elevator and zeros the position
+    else:
         right_elevator_motor.stop()
         left_elevator_motor.stop()
         right_elevator_motor.reset_position()
@@ -119,35 +135,46 @@ def zero_elevator(): # Zeros the elevator by retracting it all the way down. The
 def zero_claw(): # Zeros the end effector by opening it all the way open. Then resets the position of the end effector motor
     global zc_time
     print("[zero_claw]: started zeroing end effector")
-    # starts by opening the claw
+    # end_effector_motor.spin_to_position(10, DEGREES, 50, PERCENT, True)
     while zc_time < 10:
         end_effector_motor.spin(FORWARD, 100)
         zc_time = zc_time + 1
         wait(20, MSEC)
-    # Then continues to open the claw until it is fully open
+
     while(end_effector_motor.torque(TorqueUnits.NM) < 0.5):
-        # print("[zero_claw]: while loop - ", "end_effector_motor torque: ", end_effector_motor.torque(TorqueUnits.NM))
+        print("[zero_claw]: while loop - ", "end_effector_motor torque: ", end_effector_motor.torque(TorqueUnits.NM))
         end_effector_motor.spin(FORWARD, 50)
-    else: # Stops the claw and zeros the position
+    else:
         end_effector_motor.stop()
         end_effector_motor.reset_position()
         zc_time = 0
         print("[zero_claw]: finished zeroing end effector")
 
-def get_tilt(): # Returns how tipped the robot is regardless of rotation(heading)
+def camera_distance(cd_width_of_detected_fruit): # Converts width of fruit in camera to the distance the fruit is away from the cam
+    cd_fruit_width_irl = 3.5 # in
+    cd_fruit_width_in_cam = 78 # pixels
+    cd_fruit_distace_from_cam = 9 # in
+    cd_focal_length = (cd_fruit_width_in_cam * cd_fruit_distace_from_cam) / cd_fruit_width_irl
+    print("[camera_distance]: ", "cd_width_of_detected_fruit: ", cd_width_of_detected_fruit, ", camera_distance: ", ((cd_fruit_width_irl * cd_focal_length) / cd_width_of_detected_fruit))
+    return ((cd_fruit_width_irl * cd_focal_length) / cd_width_of_detected_fruit)
+
+def get_tilt(): # Returns how tipped the robot is regardless of rotation
     gt_pitch = inertial.orientation(OrientationType.PITCH, DEGREES)
     gt_roll = inertial.orientation(OrientationType.ROLL, DEGREES)
     print("[get_tilt]: ", "gt_pitch: ", gt_pitch, ", gt_roll: ", gt_roll, ", get_tilt: ", (math.sqrt(gt_pitch**2 + gt_roll**2)))
     return (math.sqrt(gt_pitch**2 + gt_roll**2))
 
-def allign_to_object(ato_single_color):
-    # If a valid tag is found returns [strafe_Y, and rot] needed to be alligned with fruit
+def allign_to_object(ato_single_color): # If a valid tag is found returns [strafe_Y, and rot] needed to be alligned with fruit
     print("[allign_to_object]: aligning to fruit")
 
-    # Removes old data
+    ato_objects_fruit = None, None
     ato_purple_objects_fruit = None, None
     ato_green_objects_fruit = None, None
     ato_orange_objects_fruit = None, None
+
+    ato_purple_objects_fruit = ai_vision_2.take_snapshot(ai_vision_2__purple_fruit)
+    ato_green_objects_fruit = ai_vision_2.take_snapshot(ai_vision_2__green_fruit)
+    ato_orange_objects_fruit = ai_vision_2.take_snapshot(ai_vision_2__orange_fruit)
 
     ato_strafe_Y = 0
     ato_rot = 0
@@ -157,12 +184,6 @@ def allign_to_object(ato_single_color):
     ato_found_fruit = False
     ato_locked_fruit_color = None
 
-    # Gathers new fruit data
-    ato_purple_objects_fruit = ai_vision_2.take_snapshot(ai_vision_2__purple_fruit)
-    ato_green_objects_fruit = ai_vision_2.take_snapshot(ai_vision_2__green_fruit)
-    ato_orange_objects_fruit = ai_vision_2.take_snapshot(ai_vision_2__orange_fruit)
-
-    # Determines which object is best based on largest width or user requested color
     if (ato_purple_objects_fruit[0].width >= ato_green_objects_fruit[0].width) and (ato_purple_objects_fruit[0].width >= ato_orange_objects_fruit[0].width):
         ato_target_fruit = ato_purple_objects_fruit[0]
         ato_locked_fruit_color = "purple"
@@ -172,41 +193,25 @@ def allign_to_object(ato_single_color):
     elif (ato_orange_objects_fruit[0].width >= ato_purple_objects_fruit[0].width) and (ato_orange_objects_fruit[0].width >= ato_green_objects_fruit[0].width):
         ato_target_fruit = ato_orange_objects_fruit[0]
         ato_locked_fruit_color = "orange"
-    elif ato_single_color == "purple":
-        ato_target_fruit = ato_purple_objects_fruit[0]
-        ato_locked_fruit_color = "purple"
-    elif ato_single_color == "green":
-        ato_target_fruit = ato_green_objects_fruit[0]
-        ato_locked_fruit_color = "green"
-    elif ato_single_color == "orange":
-        ato_target_fruit = ato_orange_objects_fruit[0]
-        ato_locked_fruit_color = "orange"
     else:
         ato_target_fruit = None
 
-    # If there is fruit data and if it is good enough, generates movement values based off error
     if (ato_target_fruit is not None) and (ato_target_fruit.width >= ato_target_fruit_min_width):
         ato_found_fruit = True
-        print("[allign_to_object]: ato_found_fruit? ", ato_found_fruit)
-
-        # Rotation correction values
+        print("[allign_to_object]: ato_found_fruit? ", ato_found_fruit, ", number_of_objects: ", len(ato_objects_fruit))
         ato_error_rot = ato_target_fruit.centerX - CENTER_X
         ato_rot = ato_error_rot * 0.15
 
-        # Removes jitter
         if ((not(ato_error_rot > 3)) and (not(ato_error_rot < -3))):
             ato_rot = 0
 
-        # Distance correction values
-        ato_TARGET_DISTANCE = 127
+        ato_TARGET_DISTANCE = 155 # 127
         ato_error_Y = ato_TARGET_DISTANCE - ato_target_fruit.width
         ato_strafe_Y = ato_error_Y * 0.2
 
-        # Removes jitter
         if ((not(ato_strafe_Y > 3)) and (not(ato_strafe_Y < -3))):
             ato_strafe_Y = 0
 
-        # Determines if robot has finished aligning with fruit
         if((abs(ato_strafe_Y) < 3) and (abs(ato_rot) < 3)):
             ato_complete = True
     else:
@@ -215,25 +220,20 @@ def allign_to_object(ato_single_color):
     print("[allign_to_object]: ", "ato_strafe_X: ", 0, ", ato_strafe_Y: ", ato_strafe_Y, ", ato_rot: ", ato_rot, ", ato_complete? ", ato_complete, ", ato_found_fruit? ", ato_found_fruit, ", ato_locked_fruit_color: ", ato_locked_fruit_color)
     return(0, ato_strafe_Y, ato_rot, ato_complete, ato_found_fruit, ato_locked_fruit_color)
 
-def allign_to_apriltag(atat_tag, atat_full):
-    # If a valid tag is found returns [strafe_X, strafe_Y, and rot] needed to be alligned with tag
+def allign_to_apriltag(atat_tag, atat_full): # If a valid tag is found returns [strafe_X, strafe_Y, and rot] needed to be alligned with tag
     print("[allign_to_apriltag]: aligning to tag")
-
-    # Tag id to look for
     APRIL_TAG_SINGLE = atat_tag
-    # Look for tags
     atat_objects = ai_vision.take_snapshot(AiVision.ALL_TAGS)
 
-    # Clear old data
     atat_strafe_Y = 0
     atat_strafe_X = 0
     atat_rot = 0
     atat_complete = False
     atat_found_tag = False
     locked_tag = -1
+
     atat_target_tag = None
 
-    # Determine whether to search for a spacific tag or any tag
     for atat_obj in atat_objects:
         # Single valid tag mode
         if APRIL_TAG_SINGLE != -1:
@@ -261,32 +261,26 @@ def allign_to_apriltag(atat_tag, atat_full):
 
     atat_rot = atat_error_heading * 0.8
 
-    # If tag is found, generate move values to align to tag
     if atat_target_tag is not None:
         atat_found_tag = True
         print("[allign_to_apriltag]: tag found")
-
-        # Align to center of tag
         atat_error_X = atat_target_tag.centerX - CENTER_X
 
-        # Deadzone (prevents jitter) and forces rotate before moving
+        # Deadzone (prevents jitter) and rotates before moving
         if (abs(atat_error_X) < 10) or (atat_target_tag.centerX < EDGE_MARGIN or atat_target_tag.centerX > (320 - EDGE_MARGIN)) or (abs(atat_rot) > 1.5):
             atat_strafe_X = 0
         else:
             atat_strafe_X = atat_error_X * 0.3
 
-            # Prevent large crazy movements
             if atat_strafe_X > MAX_STRAFE:
                 atat_strafe_X = MAX_STRAFE
             elif atat_strafe_X < -MAX_STRAFE:
                 atat_strafe_X = -MAX_STRAFE
 
-        # Baced on user imput determines how far away the robot aligns to bin
         if atat_full == True:
             TARGET_SIZE = 45
         else:
             TARGET_SIZE = 35
-        
         atat_error_size = TARGET_SIZE - atat_target_tag.width
         atat_strafe_Y = atat_error_size * 1.5
 
@@ -296,50 +290,38 @@ def allign_to_apriltag(atat_tag, atat_full):
 
     APRIL_TAG_SINGLE = -1
 
-    # Returns whether the robot is finished aligning to tag
     if((abs(atat_strafe_X) < 10) and (abs(atat_strafe_Y) < 3) and (abs(atat_rot) < 10)):
         atat_complete = True
 
     print("[allign_to_apriltag]: ", "atat_strafe_X: ", atat_strafe_X, ", atat_strafe_Y: ", atat_strafe_Y, ", atat_rot: ", atat_rot, ", atat_complete? ", atat_complete, ", atat_found_tag? ", atat_found_tag, ", locked_tag: ", locked_tag)
     return(atat_strafe_X, atat_strafe_Y, atat_rot, atat_complete, atat_found_tag, locked_tag)
 
-def auto_complete(): # Runs after the auto time is up
+def auto_complete(): # runs after the auto time is up
     global state
     print("[auto_complete]: auto time has run out!")
     state = MOVE
 
-def rotate(r_angle, r_kp): # Locks to the inputed angle, returns a rotation value"
+def rotate(r_angle, r_kp): # Locks to the inputed angle, returns a value to be inputed into "feild oriented"
     r_current_heading = inertial.heading()
     r_error_heading = r_angle - r_current_heading
     r_error_heading = r_error_heading * r_kp
     print("[rotate]: ", "r_angle: ", r_angle, "r_kp: ", r_kp, ", r_error_heading: ", r_error_heading)
     return(r_error_heading)
 
-def go_to_bin(gtb_bin_number): # Guides robot to correct apriltag based off other apriltag locations
+def go_to_bin(gtb_bin_number):
     print("[go_to_bin]: ", "gtb_bin_number: ", gtb_bin_number)
-    global gtb_mode
+    global gtb_s1
     global gtb_gtb_locked_tag
     gtb_complete = False
-    # First atempt to align to requested bin
     gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_atat_complete0, gtb_atat_found_tag0, gtb_locked_tag0 = allign_to_apriltag(gtb_bin_number, True)
-    if gtb_atat_found_tag0 == False: # If requested bin tag is not found
-        if gtb_mode == False: # Aligns to any tag to get a base location of where the robot is located
+    if gtb_atat_found_tag0 == False:
+        if gtb_s1 == False:
             gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_atat_complete1, gtb_atat_found_tag1, gtb_locked_tag1 = allign_to_apriltag(-1, False)
             if (gtb_atat_complete1 == True) and (gtb_atat_found_tag1 == True) and (gtb_locked_tag1 != -1):
                 gtb_gtb_locked_tag = gtb_locked_tag1
-                gtb_mode = True
-            if (gtb_atat_found_tag1 == True): # If no tag found, spin to search
-                if inertial.heading() <= 90:
-                        m_searching_direction = False
-                if inertial.heading() >= 270:
-                    m_searching_direction = True
-                if m_searching_direction == True:
-                    gtb_atat_rot = 10
-                else:
-                    gtb_atat_rot = -10
-        # Based on which bin the robot aligns to, the robot figures out which direction to move based on predetermined bin order
+                gtb_s1 = True
         else: # bins left to right: 20-21-22-23
-            if gtb_gtb_locked_tag == 20: # If bin 20 was found, move in the direction of desired bin and align to it
+            if gtb_gtb_locked_tag == 20:
                 gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_atat_complete2, gtb_atat_found_tag2, gtb_locked_tag2 = allign_to_apriltag(gtb_bin_number, True)
                 if gtb_atat_found_tag2 == False:
                     if gtb_bin_number == 21:
@@ -352,8 +334,8 @@ def go_to_bin(gtb_bin_number): # Guides robot to correct apriltag based off othe
                         print("spinny boy 20 - weeeeeeeee")
                         controller.rumble('.')
                 if (gtb_atat_complete2 == True) and (gtb_atat_found_tag2 == True):
-                    gtb_mode = False
-            if gtb_gtb_locked_tag == 21: # If bin 21 was found, move in the direction of desired bin and align to it
+                    gtb_s1 = False
+            if gtb_gtb_locked_tag == 21:
                 gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_atat_complete3, gtb_atat_found_tag3, gtb_locked_tag3 = allign_to_apriltag(gtb_bin_number, True)
                 if gtb_atat_found_tag3 == False:
                     if gtb_bin_number == 20:
@@ -366,8 +348,8 @@ def go_to_bin(gtb_bin_number): # Guides robot to correct apriltag based off othe
                         print("spinny boy 21 - weeeeeeeee")
                         controller.rumble('.')
                 if (gtb_atat_complete3 == True) and (gtb_atat_found_tag3 == True):
-                    gtb_mode = False
-            if gtb_gtb_locked_tag == 22: # If bin 22 was found, move in the direction of desired bin and align to it
+                    gtb_s1 = False
+            if gtb_gtb_locked_tag == 22:
                 gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_atat_complete4, gtb_atat_found_tag4, gtb_locked_tag4 = allign_to_apriltag(gtb_bin_number, True)
                 if gtb_atat_found_tag4 == False:
                     if gtb_bin_number == 23:
@@ -380,8 +362,8 @@ def go_to_bin(gtb_bin_number): # Guides robot to correct apriltag based off othe
                         print("spinny boy 22 - weeeeeeeee")
                         controller.rumble('.')
                 if (gtb_atat_complete4 == True) and (gtb_atat_found_tag4 == True):
-                    gtb_mode = False
-            if gtb_gtb_locked_tag == 23: # If bin 23 was found, move in the direction of desired bin and align to it
+                    gtb_s1 = False
+            if gtb_gtb_locked_tag == 23:
                 gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_atat_complete5, gtb_atat_found_tag5, gtb_locked_tag5 = allign_to_apriltag(gtb_bin_number, True)
                 if gtb_atat_found_tag5 == False:
                     if gtb_bin_number == 20:
@@ -394,37 +376,19 @@ def go_to_bin(gtb_bin_number): # Guides robot to correct apriltag based off othe
                         print("spinny boy 23 - weeeeeeeee")
                         controller.rumble('.')
                 if (gtb_atat_complete5 == True) and (gtb_atat_found_tag5 == True):
-                    gtb_mode = False
-    # Determines if the robot has finished aligning to requested tag
+                    gtb_s1 = False
     if (gtb_atat_complete0 == True) and (gtb_atat_found_tag0 == True):
         gtb_complete = True
-    print("[go_to_bin]: ", "gtb_mode? ", gtb_mode, ", gtb_atat_found_tag0? ", gtb_atat_found_tag0, ", gtb_gtb_locked_tag: ", gtb_gtb_locked_tag, ", gtb_bin_number: ", gtb_bin_number)
+    print("[go_to_bin]: ", "gtb_s1? ", gtb_s1, ", gtb_atat_found_tag0? ", gtb_atat_found_tag0, ", gtb_gtb_locked_tag: ", gtb_gtb_locked_tag, ", gtb_bin_number: ", gtb_bin_number)
     return (gtb_atat_strafe_X, gtb_atat_strafe_Y, gtb_atat_rot, gtb_complete)
 
 # MAIN LOOP ===================================================
 while True:
     # State transitions ---------------------------------------
-    brain.screen.set_cursor(1, 1)
-    if controller.buttonLeft.pressing():
-        state = CALIBRATION
-        brain.screen.set_fill_color(Color.YELLOW)
-        brain.screen.draw_rectangle(0, 0, 30, 240)
-        brain.screen.print("CALIBRATION")
-    elif controller.buttonUp.pressing():
-        state = MOVE
-        brain.screen.set_fill_color(Color.PURPLE)
-        brain.screen.draw_rectangle(0, 0, 30, 240)
-        brain.screen.print("MOVE")
-    elif controller.buttonDown.pressing():
-        state = AUTO
-        brain.screen.set_fill_color(Color.BLUE)
-        brain.screen.draw_rectangle(0, 0, 30, 240)
-        brain.screen.print("AUTO")
-    elif controller.buttonRight.pressing():
-        state = STANDBY
-        brain.screen.set_fill_color(Color.GREEN)
-        brain.screen.draw_rectangle(0, 0, 30, 240)
-        brain.screen.print("STANDBY")
+    if controller.buttonLeft.pressing():    state = CALIBRATION
+    elif controller.buttonUp.pressing():    state = MOVE
+    elif controller.buttonDown.pressing():  state = AUTO
+    elif controller.buttonRight.pressing(): state = STANDBY
 
     # State logic ---------------------------------------------
     if state == STANDBY:
@@ -453,11 +417,11 @@ while True:
     elif state == MOVE: # teleop
         # Elevator logic ------
         if controller.buttonL1.pressing():
-            right_elevator_motor.spin(FORWARD, 100, RPM)
-            left_elevator_motor.spin(FORWARD, 100, RPM)
+            right_elevator_motor.spin(FORWARD, 100)
+            left_elevator_motor.spin(FORWARD, 100)
         elif controller.buttonL2.pressing():
-            right_elevator_motor.spin(REVERSE, 100, RPM)
-            left_elevator_motor.spin(REVERSE, 100, RPM)
+            right_elevator_motor.spin(REVERSE, 100)
+            left_elevator_motor.spin(REVERSE, 100)
         else:
             right_elevator_motor.stop()
             left_elevator_motor.stop()
@@ -482,14 +446,10 @@ while True:
             m_atat_strafe_X, m_atat_strafe_Y, m_atat_rot, m_atat_complete, m_atat_found_tag, gtb_locked_tag = allign_to_apriltag(-1, True)
             if m_atat_found_tag == False:
                 controller.rumble('-')
-        if controller.buttonB.pressing():
-            m_atat_strafe_X, m_atat_strafe_Y, m_atat_rot, m_atat_complete_2, m_atat_found_tag_2, gtb_locked_tag_2 = allign_to_object(-1)
-            if m_atat_found_tag_2 == False:
-                controller.rumble('-')
 
         # Drive logic ---------
-        m_c_X = controller.axis4.position()
-        m_c_Y = controller.axis3.position()
+        m_c_X = -controller.axis4.position()
+        m_c_Y = -controller.axis3.position()
         m_c_rot = controller.axis1.position()
 
         current_heading = inertial.heading()
@@ -518,9 +478,10 @@ while True:
         if controller.buttonX.pressing():
             a_ramp_tilt_mode = 0
 
-        m_c_X = controller.axis4.position()
-        m_c_Y = controller.axis3.position()
+        m_c_X = -controller.axis4.position()
+        m_c_Y = -controller.axis3.position()
         m_c_rot = controller.axis1.position()
+
 
         if a_ramp_tilt_mode == 3:
             if camera_mode == 0:
@@ -617,11 +578,16 @@ while True:
                 wait(3000, MSEC)
 
         current_heading = inertial.heading()
+
         m_rot = a_ramp_rot + m_ato_rot + m_gtb_atat_rot + m_a_rtm_5_rot
 
         drive_x(m_c_X, (a_ramp_Y + m_c_Y), (m_ato_strafe_X + m_gtb_atat_strafe_X + a_gtb_atat_strafe_X), (m_ato_strafe_Y + m_gtb_atat_strafe_Y + a_gtb_atat_strafe_Y), (a_ramp_rot + m_ato_rot + m_gtb_atat_rot + m_c_rot), current_heading)
 
         timer.event(auto_complete, auto_time * 1000)
+        
+    # Update display ------------------------------------------
+    # Displays info on the brain screen
+    display_info()
 
     # Program speed limit -------------------------------------
     # Waits for 20 milliseconds [50 times per second (50 Hz)] to prevent CPU overload and flickering, jittering or behaving inconsistently
